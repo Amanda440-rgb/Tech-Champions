@@ -1,0 +1,1483 @@
+import pandas as pd
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, simpledialog, scrolledtext
+from datetime import datetime
+import calendar
+import smtplib
+from email.message import EmailMessage
+import fitz
+import re
+import csv
+import openpyxl
+from openpyxl.utils import get_column_letter
+import os
+import sys
+import subprocess
+
+class App:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Sistema de Controle de Status")
+        self.root.configure(bg="#ffffff")
+
+        # Set overall font family and smaller sizes to be used
+        self.font_title = ("Helvetica Neue", 14, "bold")
+        self.font_subtitle = ("Helvetica Neue", 12, "normal")
+        self.font_label = ("Helvetica Neue", 10, "normal")
+        self.font_entry = ("Helvetica Neue", 10, "normal")
+        self.font_button = ("Helvetica Neue", 10, "bold")
+        self.font_tree = ("Helvetica Neue", 9, "normal")
+
+        # Criação do Notebook (abas)
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill='both', expand=True, padx=12, pady=12)
+
+        # Aba de Painel de Status
+        self.painel_status = ttk.Frame(self.notebook)
+        self.notebook.add(self.painel_status, text="Painel de Status")
+
+        # Aba Materiais Vencidos
+        self.materiais_vencidos = ttk.Frame(self.notebook)
+        self.notebook.add(self.materiais_vencidos, text="Materiais Vencidos")
+
+        # Aba Análise de Certificados
+        self.analise_certificados = AnaliseCertificadosTab(self.notebook, parent_app=self)
+        self.notebook.add(self.analise_certificados.frame, text="Análise de Certificados")
+
+        # Lista interna de materiais recolhidos (lista de dicionários)
+        self.materiais_recolhidos = []
+
+        # Setup a style according to the guideline
+        self.setup_styles()
+
+        # Configura abas
+        self.configurar_painel_status()
+        self.configurar_materiais_vencidos()
+
+    def setup_styles(self):
+        style = ttk.Style()
+        style.theme_use("clam")
+
+        # General settings for frame and background
+        style.configure("TFrame", background="#ffffff")
+        style.configure("TLabel", background="#ffffff", foreground="#6b7280", font=self.font_label)
+        style.configure("TButton",
+                        font=self.font_button,
+                        background="#111827",
+                        foreground="#ffffff",
+                        padding=6)
+        style.map("TButton",
+                  background=[("active", "#1f2937"),
+                              ("pressed", "#1f2937")],
+                  foreground=[("disabled", "#9ca3af")])
+
+        style.configure("TEntry", padding=5, font=self.font_entry, fieldbackground="#f9fafb", foreground="#374151")
+        style.configure("TCombobox", padding=5, font=self.font_entry)
+
+        style.configure("Treeview",
+                        font=self.font_tree,
+                        background="#f9fafb",
+                        foreground="#374151",
+                        fieldbackground="#f9fafb",
+                        rowheight=25,
+                        bordercolor="#e5e7eb",
+                        relief="flat")
+        style.configure("Treeview.Heading",
+                        font=("Helvetica Neue", 10, "bold"),
+                        background="#f3f4f6",
+                        foreground="#374151",
+                        relief="flat")
+        style.map("Treeview.Heading",
+                  background=[("active", "#e5e7eb")])
+
+    def configurar_painel_status(self):
+        frame_topo = ttk.Frame(self.painel_status)
+        frame_topo.pack(pady=(20, 10), padx=20, fill="x")
+
+        titulo = tk.Label(frame_topo,
+                          text="Painel de Status de Ativos",
+                          font=("Helvetica Neue", 18, "bold"),
+                          bg="#ffffff",
+                          fg="#111827")
+        titulo.pack(anchor="w")
+
+        separador = ttk.Separator(self.painel_status, orient='horizontal')
+        separador.pack(fill='x', padx=20, pady=(0, 20))
+
+        frame_controles = ttk.Frame(self.painel_status)
+        frame_controles.pack(pady=10, padx=20, fill="x")
+
+        self.botao_abrir = ttk.Button(frame_controles, text="Carregar Arquivo CSV", command=self.abrir_arquivo)
+        self.botao_abrir.grid(row=0, column=0, padx=8, sticky="w")
+
+        label_gcm = ttk.Label(frame_controles, text="Pesquisar GCM:", font=self.font_label, background="#ffffff")
+        label_gcm.grid(row=0, column=1, padx=8, sticky="w")
+        self.entry_gcm = ttk.Entry(frame_controles, width=18, font=self.font_entry)
+        self.entry_gcm.grid(row=1, column=1, padx=8, sticky="w")
+        self.entry_gcm.insert(0, "Pesquisar GCM...")
+        self.entry_gcm.bind("<FocusIn>", self.limpar_entry)
+        self.entry_gcm.bind("<Return>", self.aplicar_filtros)
+
+        label_status = ttk.Label(frame_controles, text="Filtrar por Status:", font=self.font_label, background="#ffffff")
+        label_status.grid(row=0, column=2, padx=8, sticky="w")
+        self.combo_status = ttk.Combobox(frame_controles, state="readonly", width=18, font=self.font_entry)
+        self.combo_status.grid(row=1, column=2, padx=8, sticky="w")
+        self.combo_status.bind("<<ComboboxSelected>>", self.aplicar_filtros)
+        self.combo_status_values = ["Todos"]
+        self.combo_status['values'] = self.combo_status_values
+        self.combo_status.current(0)
+
+        label_situacao = ttk.Label(frame_controles, text="Filtrar por Situação:", font=self.font_label, background="#ffffff")
+        label_situacao.grid(row=0, column=3, padx=8, sticky="w")
+        self.combo_situacao = ttk.Combobox(frame_controles, state="readonly", width=18, font=self.font_entry)
+        self.combo_situacao.grid(row=1, column=3, padx=8, sticky="w")
+        self.combo_situacao.bind("<<ComboboxSelected>>", self.aplicar_filtros)
+        self.combo_situacao_values = ["Todos", "Dentro do Prazo", "Próximo ao Prazo", "Atrasado", "0"]
+        self.combo_situacao['values'] = self.combo_situacao_values
+        self.combo_situacao.current(0)
+
+        self.botao_filtrar = ttk.Button(frame_controles, text="Filtrar", command=self.aplicar_filtros)
+        self.botao_filtrar.grid(row=1, column=4, padx=8, sticky="w")
+
+        self.label_count_painel_frame = tk.Frame(frame_controles, bg="#f9fafb",
+                                                 bd=0, highlightthickness=0)
+        self.label_count_painel_frame.grid(row=1, column=5, padx=12, sticky="w", ipadx=14, ipady=8)
+        self.label_count_painel_frame.configure(highlightbackground="#d1d5db", highlightcolor="#d1d5db", highlightthickness=1)
+        self.label_count_painel = tk.Label(self.label_count_painel_frame,
+                                           text="Quantidade: 0",
+                                           font=("Helvetica Neue", 10, "bold"),
+                                           bg="#f9fafb",
+                                           fg="#374151")
+        self.label_count_painel.pack()
+
+        frame_tabela = ttk.Frame(self.painel_status)
+        frame_tabela.pack(fill="both", expand=True, padx=20, pady=20)
+
+        self.tree = ttk.Treeview(frame_tabela,
+                                 columns=("assetnum", "description", "dias_status", "situacao"),
+                                 show="headings", height=14)
+        self.tree.heading("assetnum", text="Asset Number")
+        self.tree.heading("description", text="Description")
+        self.tree.heading("dias_status", text="Dias no Status")
+        self.tree.heading("situacao", text="Situação")
+
+        self.tree.column("assetnum", anchor="center", width=120)
+        self.tree.column("description", anchor="w", width=280)
+        self.tree.column("dias_status", anchor="center", width=120)
+        self.tree.column("situacao", anchor="center", width=120)
+
+        self.tree.pack(fill="both", expand=True, side="left")
+
+        scrollbar = ttk.Scrollbar(frame_tabela, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+
+    def configurar_materiais_vencidos(self):
+        frame_topo = ttk.Frame(self.materiais_vencidos)
+        frame_topo.pack(pady=20, fill='x', padx=20)
+
+        titulo = tk.Label(frame_topo,
+                          text="Materiais Vencidos - Filtro por Mês, Ano e Local",
+                          font=("Helvetica Neue", 16, "bold"),
+                          bg="#ffffff",
+                          fg="#111827")
+        titulo.pack(anchor="w")
+
+        frame_controles = ttk.Frame(self.materiais_vencidos)
+        frame_controles.pack(pady=10, fill="x", padx=20)
+
+        label_mes = ttk.Label(frame_controles, text="Selecionar Mês:", font=self.font_label, background="#ffffff")
+        label_mes.grid(row=0, column=0, padx=6, sticky="w")
+
+        meses = [calendar.month_name[i] for i in range(1, 13)]
+        self.combo_mes = ttk.Combobox(frame_controles, state="readonly", values=meses, font=self.font_entry, width=13)
+        self.combo_mes.grid(row=1, column=0, padx=6, sticky="w")
+        self.combo_mes.current(datetime.now().month - 1)
+        self.combo_mes.bind("<<ComboboxSelected>>", self.atualizar_material_vencidos)
+
+        label_ano = ttk.Label(frame_controles, text="Selecionar Ano:", font=self.font_label, background="#ffffff")
+        label_ano.grid(row=0, column=1, padx=6, sticky="w")
+
+        self.combo_ano = ttk.Combobox(frame_controles, state="readonly", font=self.font_entry, width=9)
+        self.combo_ano.grid(row=1, column=1, padx=6, sticky="w")
+        self.combo_ano.bind("<<ComboboxSelected>>", self.atualizar_material_vencidos)
+
+        label_location = ttk.Label(frame_controles, text="Selecionar Local:", font=self.font_label, background="#ffffff")
+        label_location.grid(row=0, column=2, padx=6, sticky="w")
+
+        self.combo_location = ttk.Combobox(frame_controles, state="readonly", font=self.font_entry, width=22)
+        self.combo_location.grid(row=1, column=2, padx=6, sticky="w")
+        self.combo_location.bind("<<ComboboxSelected>>", self.atualizar_material_vencidos)
+
+        self.botao_atualizar = ttk.Button(frame_controles, text="Atualizar", command=self.atualizar_material_vencidos)
+        self.botao_atualizar.grid(row=1, column=3, padx=8, sticky="w")
+
+        self.botao_recolhido = ttk.Button(frame_controles, text="Marcar Material Recolhido", command=self.marca_material_recolhido)
+        self.botao_recolhido.grid(row=1, column=4, padx=8, sticky="w")
+
+        self.botao_exportar = ttk.Button(frame_controles, text="Exportar Excel", command=self.exportar_excel)
+        self.botao_exportar.grid(row=1, column=5, padx=8, sticky="w")
+
+        self.botao_notificar = ttk.Button(frame_controles, text="Enviar Notificação", command=self.enviar_notificacao)
+        self.botao_notificar.grid(row=1, column=6, padx=8, sticky="w")
+
+        self.label_count_vencidos_frame = tk.Frame(frame_controles, bg="#f9fafb",
+                                                   bd=0, highlightthickness=0)
+        self.label_count_vencidos_frame.grid(row=2, column=0, columnspan=2, pady=(16, 0), sticky="w", ipadx=14, ipady=8)
+        self.label_count_vencidos_frame.configure(relief="solid", bd=1, highlightbackground="#d1d5db",
+                                                  highlightcolor="#d1d5db", highlightthickness=1)
+        self.label_count_vencidos = tk.Label(self.label_count_vencidos_frame,
+                                             text="Qtd. Materiais Vencidos: 0",
+                                             font=("Helvetica Neue", 10, "bold"),
+                                             bg="#f9fafb",
+                                             fg="#374151")
+        self.label_count_vencidos.pack()
+
+        self.label_count_recolhidos_frame = tk.Frame(frame_controles, bg="#f9fafb",
+                                                     bd=0, highlightthickness=0)
+        self.label_count_recolhidos_frame.grid(row=2, column=2, columnspan=2, pady=(16, 0), sticky="w", ipadx=14, ipady=8)
+        self.label_count_recolhidos_frame.configure(relief="solid", bd=1, highlightbackground="#d1d5db",
+                                                    highlightcolor="#d1d5db", highlightthickness=1)
+        self.label_count_recolhidos = tk.Label(self.label_count_recolhidos_frame,
+                                               text="Qtd. Materiais Recolhidos: 0",
+                                               font=("Helvetica Neue", 10, "bold"),
+                                               bg="#f9fafb",
+                                               fg="#374151")
+        self.label_count_recolhidos.pack()
+
+        frame_tabela = ttk.Frame(self.materiais_vencidos)
+        frame_tabela.pack(fill="both", expand=True, padx=20, pady=10)
+
+        self.tree_vencidos = ttk.Treeview(frame_tabela,
+                                          columns=("assetnum", "description", "location", "displayname"),
+                                          show="headings", height=5)
+        self.tree_vencidos.heading("assetnum", text="Asset Number")
+        self.tree_vencidos.heading("description", text="Description")
+        self.tree_vencidos.heading("location", text="Location")
+        self.tree_vencidos.heading("displayname", text="Display Name")
+
+        self.tree_vencidos.column("assetnum", anchor="center", width=140)
+        self.tree_vencidos.column("description", anchor="w", width=320)
+        self.tree_vencidos.column("location", anchor="w", width=220)
+        self.tree_vencidos.column("displayname", anchor="w", width=250)
+
+        self.tree_vencidos.pack(fill="both", expand=True, side="left")
+
+        scrollbar_vencidos = ttk.Scrollbar(frame_tabela, orient="vertical", command=self.tree_vencidos.yview)
+        self.tree_vencidos.configure(yscrollcommand=scrollbar_vencidos.set)
+        scrollbar_vencidos.pack(side="right", fill="y")
+
+        label_recolhidos = tk.Label(self.materiais_vencidos,
+                                    text="Materiais Recolhidos",
+                                    font=("Helvetica Neue", 16, "bold"),
+                                    bg="#ffffff",
+                                    fg="#111827")
+        label_recolhidos.pack(pady=(24, 8), anchor="w", padx=20)
+
+        frame_recolhidos = ttk.Frame(self.materiais_vencidos)
+        frame_recolhidos.pack(fill="both", expand=True, padx=20, pady=10)
+
+        self.tree_recolhidos = ttk.Treeview(frame_recolhidos,
+                                           columns=("assetnum", "description", "location", "displayname", "data_recolhimento"),
+                                           show="headings", height=15)
+        self.tree_recolhidos.heading("assetnum", text="Asset Number")
+        self.tree_recolhidos.heading("description", text="Description")
+        self.tree_recolhidos.heading("location", text="Location")
+        self.tree_recolhidos.heading("displayname", text="Display Name")
+        self.tree_recolhidos.heading("data_recolhimento", text="Data de Recolhimento")
+
+        self.tree_recolhidos.column("assetnum", anchor="center", width=140)
+        self.tree_recolhidos.column("description", anchor="w", width=230)
+        self.tree_recolhidos.column("location", anchor="w", width=180)
+        self.tree_recolhidos.column("displayname", anchor="w", width=220)
+        self.tree_recolhidos.column("data_recolhimento", anchor="center", width=150)
+
+        self.tree_recolhidos.pack(fill="both", expand=True, side="left")
+
+        scrollbar_recolhidos = ttk.Scrollbar(frame_recolhidos, orient="vertical", command=self.tree_recolhidos.yview)
+        self.tree_recolhidos.configure(yscrollcommand=scrollbar_recolhidos.set)
+        scrollbar_recolhidos.pack(side="right", fill="y")
+
+    def limpar_entry(self, event):
+        if self.entry_gcm.get() == "Pesquisar GCM...":
+            self.entry_gcm.delete(0, tk.END)
+
+    def abrir_arquivo(self):
+        caminho_arquivo = filedialog.askopenfilename(
+            title="Selecione o arquivo CSV",
+            filetypes=[("Arquivos CSV", "*.csv")]
+        )
+        if not caminho_arquivo:
+            return
+
+        try:
+            self.df = pd.read_csv(caminho_arquivo, delimiter=',', on_bad_lines='skip')
+
+            colunas_necessarias = {'status', 'assetnum', 'description', 'location', 'changedate', 'nextdate', 'displayname'}
+            if not colunas_necessarias.issubset(self.df.columns):
+                messagebox.showerror(
+                    "Erro",
+                    "O arquivo deve conter as colunas: status, assetnum, description, location, changedate, nextdate e displayname."
+                )
+                return
+
+            self.df = self.df.drop_duplicates(subset='assetnum')
+            self.df = self.df[self.df['assetnum'].astype(str).str.startswith("GCM")]
+
+            locais_excluidos = ["AT-MRS-HORTO", "AT-SAOLUIZ-M", "MSA ARARAQUA"]
+            self.df = self.df[~self.df['location'].isin(locais_excluidos)]
+
+            # Converte 'changedate' para datetime, tratando erros
+            self.df['changedate'] = pd.to_datetime(self.df['changedate'], errors='coerce', format='%b %d, %Y, %I:%M %p')
+
+            # Atribuir data de hoje para changedate onde está nulo
+            hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            self.df.loc[self.df['changedate'].isna(), 'changedate'] = pd.to_datetime(hoje)
+
+            # Converte 'nextdate' para datetime, tratando erros
+            self.df['nextdate'] = pd.to_datetime(self.df['nextdate'], errors='coerce')
+
+            # Normaliza a data atual para o início do dia para cálculo correto
+            now_normalized = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            self.df['dias_status'] = (now_normalized - self.df['changedate'].dt.normalize()).dt.days.abs()
+
+            self.df['status'] = self.df['status'].fillna('').astype(str).str.strip().str.upper()
+            self.df['situacao'] = self.df.apply(self.calcular_situacao, axis=1)
+
+            status_unicos = list(self.df['status'].dropna().unique())
+            valores_status = ["Todos"] + sorted([s for s in status_unicos if s != ''])
+            self.combo_status['values'] = valores_status
+            self.combo_status.current(0)
+
+            situacoes_unicas = list(self.df['situacao'].dropna().unique())
+            valores_situacao = ["Todos"]
+            for s in ["Dentro do Prazo", "Próximo ao Prazo", "Atrasado", "Não controlado"]:
+                if s in situacoes_unicas:
+                    valores_situacao.append(s)
+            for s in situacoes_unicas:
+                if s not in valores_situacao:
+                    valores_situacao.append(s)
+            self.combo_situacao['values'] = valores_situacao
+            self.combo_situacao.current(0)
+
+            self.atualizar_valores_filtros_materiais()
+            self.aplicar_filtros()
+            self.atualizar_material_vencidos()
+            self.materiais_recolhidos.clear()
+            self.atualizar_tabela_recolhidos()
+
+        except Exception as e:
+            messagebox.showerror("Erro ao ler o arquivo", str(e))
+
+    def atualizar_valores_filtros_materiais(self):
+        locais_unicos = sorted(self.df['location'].dropna().unique())
+        self.combo_location['values'] = ["Todos"] + locais_unicos
+        self.combo_location.current(0)
+
+        anos_unicos = sorted(set(self.df['nextdate'].dropna().dt.year.unique()))
+        anos_unicos_str = [str(a) for a in anos_unicos]
+        self.combo_ano['values'] = ["Todos"] + anos_unicos_str
+        if len(anos_unicos_str) > 0:
+            ano_atual_str = str(datetime.now().year)
+            if ano_atual_str in anos_unicos_str:
+                self.combo_ano.current(anos_unicos_str.index(ano_atual_str) + 1)
+            else:
+                self.combo_ano.current(1)
+        else:
+            self.combo_ano.current(0)
+
+    def calcular_situacao(self, row):
+        dias = row['dias_status']
+        status = str(row['status']).strip().upper()
+
+        if status == "NOT READY":
+            if dias < 20:
+                return "Dentro do Prazo"
+            elif dias >= 28:
+                return "Atrasado"
+            elif 20 <= dias < 28:
+                return "Próximo ao Prazo"
+        elif status == "INCAL":
+            if dias < 8:
+                return "Dentro do Prazo"
+            elif dias >= 12:
+                return "Atrasado"
+            elif 8 <= dias < 12:
+                return "Próximo ao Prazo"
+        elif status == "IN STOREROOM":
+            if dias < 20:
+                return "Dentro do Prazo"
+            elif dias >= 28:
+                return "Atrasado"
+            elif 20 <= dias < 28:
+                return "Próximo ao Prazo"
+        elif status == "EXCAL":
+            if dias < 30:
+                return "Dentro do Prazo"
+            elif dias >= 38:
+                return "Atrasado"
+            elif 30 <= dias < 38:
+                return "Próximo ao Prazo"
+        elif status == "ACTIVE":
+            return "Dentro do Prazo"
+        elif status == "":
+            return "Indefinido"
+        else:
+            return "Não controlado"
+
+    def aplicar_filtros(self, event=None):
+        if not hasattr(self, 'df'):
+            return
+
+        df_filtrado = self.df.copy()
+
+        texto_gcm = self.entry_gcm.get().strip()
+        if texto_gcm and texto_gcm != "Pesquisar GCM...":
+            df_filtrado = df_filtrado[df_filtrado['assetnum'].astype(str).str.contains(texto_gcm, case=False, na=False)]
+
+        status_selecionado = self.combo_status.get()
+        if status_selecionado and status_selecionado != "Todos":
+            df_filtrado = df_filtrado[df_filtrado['status'] == status_selecionado]
+
+        situacao_selecionada = self.combo_situacao.get()
+        if situacao_selecionada and situacao_selecionada != "Todos":
+            df_filtrado = df_filtrado[df_filtrado['situacao'] == situacao_selecionada]
+
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        for _, row in df_filtrado[['assetnum', 'description', 'dias_status', 'situacao']].iterrows():
+            self.tree.insert("", "end", values=(row['assetnum'], row['description'], row['dias_status'], row['situacao']))
+
+        self.label_count_painel.config(text=f"Quantidade: {len(df_filtrado)}")
+
+    def atualizar_material_vencidos(self, event=None):
+        if not hasattr(self, 'df'):
+            return
+
+        mes_texto = self.combo_mes.get()
+        ano_texto = self.combo_ano.get()
+        location_texto = self.combo_location.get()
+
+        if not mes_texto:
+            return
+
+        try:
+            mes_numero = list(calendar.month_name).index(mes_texto)
+            if mes_numero == 0:
+                messagebox.showerror("Erro", "Mês inválido")
+                return
+        except ValueError:
+            messagebox.showerror("Erro", "Mês inválido")
+            return
+
+        df_vencidos = self.df.copy()
+
+        df_vencidos = df_vencidos[df_vencidos['nextdate'].notna()]
+        df_vencidos = df_vencidos[df_vencidos['nextdate'].dt.month == mes_numero]
+
+        if ano_texto and ano_texto != "Todos":
+            try:
+                ano_numero = int(ano_texto)
+                df_vencidos = df_vencidos[df_vencidos['nextdate'].dt.year == ano_numero]
+            except:
+                messagebox.showerror("Erro", "Ano inválido")
+                return
+
+        if location_texto and location_texto != "Todos":
+            df_vencidos = df_vencidos[df_vencidos['location'] == location_texto]
+
+        recolhidos_assetnums = set(m['assetnum'].strip().upper() for m in self.materiais_recolhidos)
+        df_vencidos = df_vencidos[~df_vencidos['assetnum'].astype(str).str.strip().str.upper().isin(recolhidos_assetnums)]
+
+        for item in self.tree_vencidos.get_children():
+            self.tree_vencidos.delete(item)
+
+        for _, row in df_vencidos[['assetnum', 'description', 'location', 'displayname']].iterrows():
+            self.tree_vencidos.insert("", "end", values=(row['assetnum'], row['description'], row['location'], row['displayname']))
+
+        self.label_count_vencidos.config(text=f"Qtd. Materiais Vencidos: {len(df_vencidos)}")
+
+    def marca_material_recolhido(self):
+        if not hasattr(self, 'df'):
+            messagebox.showerror("Erro", "Nenhum arquivo CSV carregado.")
+            return
+
+        assetnum = simpledialog.askstring("Material Recolhido", "Digite o Asset Number (GCM) do material recolhido:")
+
+        if not assetnum:
+            return
+
+        encontrados = []
+        for item in self.tree_vencidos.get_children():
+            vals = self.tree_vencidos.item(item, "values")
+            if vals and vals[0].strip().upper() == assetnum.strip().upper():
+                encontrados.append(vals)
+
+        if not encontrados:
+            messagebox.showerror("Erro", f"Material com Asset Number '{assetnum}' não encontrado na lista de Materiais Vencidos.")
+            return
+
+        data_recolhimento = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for vals in encontrados:
+            ja_existe = any(mr['assetnum'].strip().upper() == vals[0].strip().upper() for mr in self.materiais_recolhidos)
+            if not ja_existe:
+                self.materiais_recolhidos.append({
+                    "assetnum": vals[0],
+                    "description": vals[1],
+                    "location": vals[2],
+                    "displayname": vals[3],
+                    "data_recolhimento": data_recolhimento
+                })
+
+        self.atualizar_tabela_recolhidos()
+        self.atualizar_material_vencidos()
+        messagebox.showinfo("Sucesso", f"Material(s) com Asset Number '{assetnum}' marcado(s) como recolhido(s).")
+
+    def atualizar_tabela_recolhidos(self):
+        for item in self.tree_recolhidos.get_children():
+            self.tree_recolhidos.delete(item)
+
+        for mat in self.materiais_recolhidos:
+            self.tree_recolhidos.insert("", "end", values=(
+                mat['assetnum'], mat['description'], mat['location'], mat['displayname'], mat['data_recolhimento']
+            ))
+
+        self.label_count_recolhidos.config(text=f"Qtd. Materiais Recolhidos: {len(self.materiais_recolhidos)}")
+
+    def exportar_excel(self):
+        if not hasattr(self, 'df'):
+            messagebox.showerror("Erro", "Nenhum arquivo CSV carregado.")
+            return
+
+        op = simpledialog.askstring("Exportar Excel", "Digite 'v' para Materiais Vencidos ou 'r' para Materiais Recolhidos:")
+
+        if not op:
+            return
+
+        op = op.lower()
+        if op == 'v':
+            mes_texto = self.combo_mes.get()
+            ano_texto = self.combo_ano.get()
+            location_texto = self.combo_location.get()
+
+            try:
+                mes_numero = list(calendar.month_name).index(mes_texto)
+                if mes_numero == 0:
+                    messagebox.showerror("Erro", "Mês inválido")
+                    return
+            except ValueError:
+                messagebox.showerror("Erro", "Mês inválido")
+                return
+
+            df_export = self.df.copy()
+            df_export = df_export[df_export['nextdate'].notna()]
+            df_export = df_export[df_export['nextdate'].dt.month == mes_numero]
+
+            if ano_texto and ano_texto != "Todos":
+                try:
+                    ano_numero = int(ano_texto)
+                    df_export = df_export[df_export['nextdate'].dt.year == ano_numero]
+                except:
+                    messagebox.showerror("Erro", "Ano inválido")
+                    return
+
+            if location_texto and location_texto != "Todos":
+                df_export = df_export[df_export['location'] == location_texto]
+
+            recolhidos_assetnums = set(m['assetnum'].strip().upper() for m in self.materiais_recolhidos)
+            df_export = df_export[~df_export['assetnum'].astype(str).str.strip().str.upper().isin(recolhidos_assetnums)]
+
+            df_export = df_export[['assetnum', 'description', 'location', 'displayname', 'nextdate']]
+            df_export = df_export.rename(columns={'nextdate': 'Next Date'})
+
+        elif op == 'r':
+            if not self.materiais_recolhidos:
+                messagebox.showinfo("Informação", "Não há materiais recolhidos para exportar.")
+                return
+            df_export = pd.DataFrame(self.materiais_recolhidos)
+        else:
+            messagebox.showerror("Erro", "Opção inválida.")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Arquivos Excel", "*.xlsx")],
+            title="Salvar arquivo Excel"
+        )
+        if not file_path:
+            return
+
+        try:
+            df_export.to_excel(file_path, index=False)
+            messagebox.showinfo("Sucesso", f"Dados exportados com sucesso para:\n{file_path}")
+        except Exception as e:
+            messagebox.showerror("Erro ao exportar", str(e))
+
+    def enviar_notificacao(self):
+        if not hasattr(self, 'df'):
+            messagebox.showerror("Erro", "Nenhum arquivo CSV carregado.")
+            return
+
+        op = simpledialog.askstring("Enviar Notificação", "Digite 'v' para Materiais Vencidos ou 'r' para Materiais Recolhidos:")
+
+        if not op:
+            return
+
+        op = op.lower()
+        if op == 'v':
+            mes_texto = self.combo_mes.get()
+            ano_texto = self.combo_ano.get()
+
+            try:
+                mes_numero = list(calendar.month_name).index(mes_texto)
+                if mes_numero == 0:
+                    messagebox.showerror("Erro", "Mês inválido")
+                    return
+            except ValueError:
+                messagebox.showerror("Erro", "Mês inválido")
+                return
+
+            df_msg = self.df.copy()
+            df_msg = df_msg[df_msg['nextdate'].notna()]
+            df_msg = df_msg[df_msg['nextdate'].dt.month == mes_numero]
+
+            if ano_texto and ano_texto != "Todos":
+                try:
+                    ano_numero = int(ano_texto)
+                    df_msg = df_msg[df_msg['nextdate'].dt.year == ano_numero]
+                except:
+                    messagebox.showerror("Erro", "Ano inválido")
+                    return
+
+            recolhidos_assetnums = set(m['assetnum'].strip().upper() for m in self.materiais_recolhidos)
+            df_msg = df_msg[~df_msg['assetnum'].astype(str).str.strip().str.upper().isin(recolhidos_assetnums)]
+
+            if df_msg.empty:
+                messagebox.showinfo("Informação", "Não há materiais vencidos para enviar.")
+                return
+
+            grupos_locations = df_msg.groupby('location')
+
+            any_sent = False
+            for location, grupo in grupos_locations:
+                destinatario = simpledialog.askstring("Enviar Notificação", f"Digite o e-mail do destinatário para {location}:")
+                if not destinatario or '@' not in destinatario:
+                    messagebox.showwarning("Aviso", f"Endereço de e-mail inválido para {location}, pulando este local.")
+                    continue
+
+                assunto = f"Notificação de Materiais Vencidos - {location}"
+
+                # Convert dataframe to HTML table styled
+                df_to_send = grupo[['assetnum', 'description', 'displayname', 'nextdate']].rename(columns={'nextdate': 'Data de Vencimento'})
+
+                # Inline CSS for email table style
+                style = """
+                    <style>
+                    body {
+                        background-color: #ffffff;
+                        margin: 0;
+                        padding: 0;
+                        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                        color: #6b7280;
+                        font-size: 16px;
+                        line-height: 1.5;
+                    }
+                    .container {
+                        max-width: 700px;
+                        margin: 30px auto;
+                        padding: 20px 30px;
+                        background: #fff;
+                        border-radius: 12px;
+                        box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+                    }
+                    h1 {
+                        font-size: 32px;
+                        font-weight: 700;
+                        color: #111827;
+                        margin-bottom: 0.5em;
+                    }
+                    p {
+                        margin-top: 0;
+                        margin-bottom: 1.5em;
+                    }
+                    table {
+                        width: 100%;
+                        border-collapse: separate;
+                        border-spacing: 0 10px;
+                        margin-bottom: 1.5em;
+                    }
+                    th {
+                        text-align: left;
+                        color: #374151;
+                        border-bottom: 2px solid #e5e7eb;
+                        padding: 8px 12px;
+                    }
+                    td {
+                        background: #f9fafb;
+                        padding: 12px 14px;
+                        color: #374151;
+                        border-radius: 8px;
+                        box-shadow: inset 0 0 3px rgba(0,0,0,0.05);
+                    }
+                    </style>
+                """
+
+                # Generate HTML table string without thead to exclude column headers
+                html_table_raw = df_to_send.to_html(index=False, border=0, classes="", justify="left", escape=False)
+                # Remove the <thead>...</thead> section from the html_table_raw
+                import re
+                html_table = re.sub(r'<thead>.*?</thead>', '', html_table_raw, flags=re.DOTALL)
+
+                corpo_html = f"""
+                <!DOCTYPE html>
+                <html>
+                <head>{style}</head>
+                <body>
+                  <div class="container">
+                    <h1>Notificação de Materiais Vencidos</h1>
+                    <p>Prezados,</p>
+                    <p>Segue a relação dos materiais vencidos para o local <strong>{location}</strong>, contendo o material e o dia de vencimento:</p>
+                    {html_table}
+                    <p>Solicitamos a entrega destes materiais no Setor de Metrologia.</p>
+                    <p>Atenciosamente,<br>Equipe de Controle de Ativos</p>
+                  </div>
+                </body>
+                </html>
+                """
+
+                plain_text = (
+                    f"Notificação de Materiais Vencidos\n"
+                    f"Local: {location}\n\n"
+                    f"Segue relação dos materiais vencidos contendo o material e o dia de vencimento.\n\n"
+                    f"{df_to_send.to_string(index=False)}\n\n"
+                    "Solicitamos a entrega destes materiais no Setor de Metrologia.\n\n"
+                    "Atenciosamente,\nEquipe de Controle de Ativos"
+                )
+
+                try:
+                    self.enviar_email_outlook(destinatario, assunto, corpo_html, plain_text)
+                    any_sent = True
+                except Exception as e:
+                    messagebox.showerror("Erro ao enviar e-mail", f"Erro ao enviar para {location}: {str(e)}")
+
+            if any_sent:
+                messagebox.showinfo("Sucesso", "E-mails enviados com sucesso para os locais válidos!")
+            else:
+                messagebox.showinfo("Informação", "Nenhum e-mail foi enviado.")
+
+        elif op == 'r':
+            if not self.materiais_recolhidos:
+                messagebox.showinfo("Informação", "Não há materiais recolhidos para enviar.")
+                return
+            df_msg = pd.DataFrame(self.materiais_recolhidos)
+
+            grupos_locations = df_msg.groupby('location')
+
+            any_sent = False
+            for location, grupo in grupos_locations:
+                destinatario = simpledialog.askstring("Enviar Notificação", f"Digite o e-mail do destinatário para {location}:")
+                if not destinatario or '@' not in destinatario:
+                    messagebox.showwarning("Aviso", f"Endereço de e-mail inválido para {location}, pulando este local.")
+                    continue
+
+                assunto = f"Notificação de Materiais Recolhidos - {location}"
+
+                df_to_send = grupo[['assetnum', 'description','displayname', 'data_recolhimento']].rename(columns={'data_recolhimento': 'Data de Recolhimento'})
+
+                style = """
+                    <style>
+                    body {
+                        background-color: #ffffff;
+                        margin: 0;
+                        padding: 0;
+                        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                        color: #6b7280;
+                        font-size: 16px;
+                        line-height: 1.5;
+                    }
+                    .container {
+                        max-width: 700px;
+                        margin: 30px auto;
+                        padding: 20px 30px;
+                        background: #fff;
+                        border-radius: 12px;
+                        box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+                    }
+                    h1 {
+                        font-size: 32px;
+                        font-weight: 700;
+                        color: #111827;
+                        margin-bottom: 0.5em;
+                    }
+                    p {
+                        margin-top: 0;
+                        margin-bottom: 1.5em;
+                    }
+                    table {
+                        width: 100%;
+                        border-collapse: separate;
+                        border-spacing: 0 10px;
+                        margin-bottom: 1.5em;
+                    }
+                    th {
+                        text-align: left;
+                        color: #374151;
+                        border-bottom: 2px solid #e5e7eb;
+                        padding: 8px 12px;
+                    }
+                    td {
+                        background: #f9fafb;
+                        padding: 12px 14px;
+                        color: #374151;
+                        border-radius: 8px;
+                        box-shadow: inset 0 0 3px rgba(0,0,0,0.05);
+                    }
+                    </style>
+                """
+
+                html_table_raw = df_to_send.to_html(index=False, border=0, classes="", justify="left", escape=False)
+                import re
+                html_table = re.sub(r'<thead>.*?</thead>', '', html_table_raw, flags=re.DOTALL)
+
+                corpo_html = f"""
+                <!DOCTYPE html>
+                <html>
+                <head>{style}</head>
+                <body>
+                  <div class="container">
+                    <h1>Notificação de Materiais Recolhidos</h1>
+                    <p>Segue a relação dos materiais recolhidos para o local <strong>{location}</strong>, contendo o material e a data de recolhimento:</p>
+                    {html_table}
+                    <p>Atenciosamente,<br>Equipe de Controle de Ativos</p>
+                  </div>
+                </body>
+                </html>
+                """
+
+                plain_text = (
+                    f"Notificação de Materiais Recolhidos\n"
+                    f"Local: {location}\n\n"
+                    f"Segue relação dos materiais recolhidos contendo o material e a data de recolhimento.\n\n"
+                    f"{df_to_send.to_string(index=False)}\n\n"
+                    "Atenciosamente,\nEquipe de Controle de Ativos"
+                )
+
+                try:
+                    self.enviar_email_outlook(destinatario, assunto, corpo_html, plain_text)
+                    any_sent = True
+                except Exception as e:
+                    messagebox.showerror("Erro ao enviar e-mail", f"Erro ao enviar para {location}: {str(e)}")
+
+            if any_sent:
+                messagebox.showinfo("Sucesso", "E-mails enviados com sucesso para os locais válidos!")
+            else:
+                messagebox.showinfo("Informação", "Nenhum e-mail foi enviado.")
+        else:
+            messagebox.showerror("Erro", "Opção inválida.")
+            return
+
+    def enviar_email_outlook(self, to_email, subject, html_body, plain_body=None):
+        SMTP_SERVER = "smtp.office365.com"
+        SMTP_PORT = 587
+        SMTP_USER = "gabriel.viegas@wabtec.com"  # Atualize para seu e-mail corporativo
+        SMTP_PASSWORD = ""  # Atualize para sua senha ou token de app
+
+        msg = EmailMessage()
+        msg['From'] = SMTP_USER
+        msg['To'] = to_email
+        msg['Subject'] = subject
+
+        if plain_body is None:
+            plain_body = html_body
+
+        # Set both plain text and html for multipart/alternative email
+        msg.set_content(plain_body)
+        msg.add_alternative(html_body, subtype='html')
+
+        try:
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+                server.starttls()
+                server.login(SMTP_USER, SMTP_PASSWORD)
+                server.send_message(msg)
+            print(f"E-mail enviado com sucesso para {to_email}")
+        except Exception as e:
+            print(f"Erro enviando e-mail para {to_email}: {str(e)}")
+            raise
+
+class AnaliseCertificadosTab:
+    def __init__(self, notebook, font_title=None, font_label=None, bg_color="#ffffff", parent_app=None):
+        self.parent_app = parent_app
+        self.notebook = notebook
+        self.bg_color = bg_color
+
+        self.frame = ttk.Frame(self.notebook)
+        # A adição ao notebook será feita externamente para controle do App principal
+
+        self.font_title = font_title if font_title else ("Helvetica Neue", 18, "bold")
+        self.font_label = font_label if font_label else ("Helvetica Neue", 12, "normal")
+
+        self.current_data = []
+        self.current_limite_info = {}
+        self.aprovados_db = []  # In-memory simple DB
+        self.current_pdf_path = ""
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        title = tk.Label(self.frame, text="Análise de Certificados", font=self.font_title, bg="white", fg="#111827")
+        title.pack(anchor="w", padx=20, pady=(20, 10))
+
+        subtitle = tk.Label(self.frame,
+                            text="Gerencie e analise os certificados dos seus ativos nesta aba.",
+                            font=self.font_label, bg="white",
+                            fg="#6b7280", wraplength=1000, justify="left")
+        subtitle.pack(anchor="w", padx=20, pady=(0, 20))
+
+        frame_controles = ttk.Frame(self.frame)
+        frame_controles.pack(padx=20, pady=10, fill="x")
+
+        self.btn_selecionar = ttk.Button(frame_controles, text="Selecionar Certificado PDF",
+                                        command=self.selecionar_pdf)
+        self.btn_selecionar.pack(side="left", padx=5)
+
+        self.btn_adicionar_aprovado = ttk.Button(frame_controles, text="Adicionar aos Aprovados",
+                                                command=self.adicionar_aprovado, state="disabled")
+        self.btn_adicionar_aprovado.pack(side="left", padx=5)
+
+        self.btn_reprovado = ttk.Button(frame_controles, text="Reprovado",
+                                       command=self.abrir_janela_reprovado, state="disabled")
+        self.btn_reprovado.pack(side="left", padx=5)
+
+        self.btn_limpar = ttk.Button(frame_controles, text="Limpar Dados",
+                                    command=self.limpar_dados, state="disabled")
+        self.btn_limpar.pack(side="left", padx=5)
+
+        self.btn_visualizar_pdf = ttk.Button(frame_controles, text="Visualizar PDF",
+                                            command=self.visualizar_pdf, state="disabled")
+        self.btn_visualizar_pdf.pack(side="left", padx=5)
+
+        self.btn_exportar_historico = ttk.Button(frame_controles, text="Exportar Histórico Excel",
+                                                command=self.exportar_historico_excel)
+        self.btn_exportar_historico.pack(side="left", padx=5)
+
+        self.status_label = tk.Label(frame_controles, text="Status: Aguardando seleção de PDF.",
+                                     fg="gray", bg="white", font=self.font_label)
+        self.status_label.pack(side="right", padx=5)
+
+        frame_tabela = ttk.LabelFrame(self.frame, text="Dados do Certificado")
+        frame_tabela.pack(fill="both", expand=True, padx=20, pady=10)
+
+        colunas = ["V.I (Ponto)", "V.R (Certificado)", "Erro (Calc)", "Erro (PDF)", "Erro Confere?", "Incerteza",
+                   "Erro Total (PDF)", "Erro Total (Calculado)", "Erro Total Confere?", "Limite de Erro", "Status"]
+
+        self.tree = ttk.Treeview(frame_tabela, columns=colunas, show="headings",height=7)
+        for col in colunas:
+            self.tree.heading(col, text=col, anchor="c")
+            self.tree.column(col, width=110, minwidth=80, stretch=tk.YES)
+        self.tree.pack(expand=True, fill="both", pady=5)
+
+        self.info = tk.Label(self.frame, text="Limite de erro: Não identificado",
+                             fg="darkblue", font=("Arial", 10, "bold"), bg="white")
+        self.info.pack(pady=(0, 10), anchor="c", padx=20)
+
+        frame_inferior = ttk.Frame(self.frame)
+        frame_inferior.pack(fill="x", padx=20, pady=10)
+
+        frame_cert_info = ttk.LabelFrame(frame_inferior, text="Informações do Certificado")
+        frame_cert_info.pack(side="left", fill="both", expand=True, padx=5)
+
+        ttk.Label(frame_cert_info, text="Nº do Certificado:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        self.label_cert_num = ttk.Label(frame_cert_info, text="N/A", font=("Arial", 9, "bold"))
+        self.label_cert_num.grid(row=0, column=1, sticky="w", padx=5, pady=2)
+
+        ttk.Label(frame_cert_info, text="Data de Calibração:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        self.label_data_cal = ttk.Label(frame_cert_info, text="N/A", font=("Arial", 9, "bold"))
+        self.label_data_cal.grid(row=1, column=1, sticky="w", padx=5, pady=2)
+
+        ttk.Label(frame_cert_info, text="GCM do Material:").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        self.label_gcm = ttk.Label(frame_cert_info, text="N/A", font=("Arial", 9, "bold"))
+        self.label_gcm.grid(row=2, column=1, sticky="w", padx=5, pady=2)
+
+        frame_aprovados = ttk.LabelFrame(frame_inferior, text="Histórico de Certificados Analisados")
+        frame_aprovados.pack(side="right", fill="both", expand=True, padx=5)
+
+        colunas_aprovados = ["Número do Certificado", "Data de Calibração", "GCM do Material",
+                             "Status Análise", "Data da Análise"]
+        self.tree_aprovados = ttk.Treeview(frame_aprovados, columns=colunas_aprovados, show="headings")
+        for col in colunas_aprovados:
+            self.tree_aprovados.heading(col, text=col, anchor="w")
+            self.tree_aprovados.column(col, width=140, minwidth=100, stretch=tk.YES)
+        self.tree_aprovados.pack(expand=True, fill="both", pady=5)
+
+    # Implementando os métodos para a aba de análise de certificados:
+
+    def selecionar_pdf(self):
+        caminho = filedialog.askopenfilename(
+            title="Selecione um Certificado PDF",
+            filetypes=[("Arquivos PDF", "*.pdf")]
+        )
+        if not caminho:
+            self.status_label.config(text="Status: Seleção cancelada", fg="gray")
+            self._desabilitar_botoes()
+            return
+
+        self.status_label.config(text="Status: Processando PDF...", fg="orange")
+        self.frame.update_idletasks()
+
+        dados, limite_info, cert_num, data_cal, gcm = extrair_dados_pdf(caminho)
+        self.current_data = dados
+        self.current_limite_info = limite_info
+        self.current_pdf_path = caminho
+
+        self.label_cert_num.config(text=cert_num if cert_num else "Não encontrado")
+        self.label_data_cal.config(text=data_cal if data_cal else "Não encontrado")
+        self.label_gcm.config(text=gcm if gcm else "Não encontrado")
+
+        if dados:
+            self.exibir_dados(dados, limite_info)
+            self.status_label.config(text="Status: Processamento concluído.", fg="green")
+            self._habilitar_botoes()
+        else:
+            messagebox.showinfo("Nenhum Dado Encontrado", "Não foi possível extrair dados válidos do PDF.")
+            self.status_label.config(text="Status: Nenhum dado encontrado.", fg="red")
+            self._desabilitar_botoes()
+            self.limpar_dados()
+
+    def _habilitar_botoes(self):
+        self.btn_limpar.config(state="normal")
+        self.btn_adicionar_aprovado.config(state="normal")
+        self.btn_visualizar_pdf.config(state="normal")
+        self.btn_reprovado.config(state="normal")
+
+    def _desabilitar_botoes(self):
+        self.btn_limpar.config(state="disabled")
+        self.btn_adicionar_aprovado.config(state="disabled")
+        self.btn_visualizar_pdf.config(state="disabled")
+        self.btn_reprovado.config(state="disabled")
+
+    def exibir_dados(self, dados, limite_info):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        for d in dados:
+            cor = "green" if d["Status"] == "Aprovado" else "red"
+            
+            # Verifica se limite_info é um dicionário e se contém a chave 'valor'
+            limite_erro = limite_info['valor'] if isinstance(limite_info, dict) and 'valor' in limite_info else "Não identificado"
+            
+            self.tree.insert("", "end", values=(
+                d["V.I (Ponto)"], 
+                d["V.R (Certificado)"], 
+                d["Erro (Calc)"], 
+                d["Erro (PDF)"], 
+                d["Erro Confere?"], 
+                d["Incerteza"],
+                d["Erro Total (PDF)"], 
+                d["Erro Total (Calculado)"], 
+                d["Erro Total Confere?"], 
+                limite_erro,  # Usando a variável limite_erro
+                d["Status"]
+            ), tags=(cor,))
+
+        self.tree.tag_configure("green", background="lightgreen")
+        self.tree.tag_configure("red", background="salmon")
+
+        if limite_info.get("tipo") == "percentual":
+            txt = f"Limite de erro: {limite_info['valor']}{limite_info['unidade']} do ponto medido"
+        elif limite_info.get("tipo") == "fixo":
+            txt = f"Limite de erro fixo: {limite_info['valor']} {limite_info['unidade']}"
+        else:
+            txt = "Limite de erro: Não identificado no PDF"
+        self.info.config(text=txt)
+
+    def limpar_dados(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        self.info.config(text="Limite de erro: Não identificado", fg="darkblue")
+        self.status_label.config(text="Status: Aguardando seleção de PDF.", fg="gray")
+
+        self.label_cert_num.config(text="N/A")
+        self.label_data_cal.config(text="N/A")
+        self.label_gcm.config(text="N/A")
+
+        self.current_data = []
+        self.current_limite_info = {}
+        self.current_pdf_path = ""
+
+        self._desabilitar_botoes()
+
+    def adicionar_aprovado(self):
+        if not self.current_data:
+            messagebox.showwarning("Aviso", "Nenhum dado foi carregado para adicionar.")
+            return
+
+        cert_num = self.label_cert_num.cget("text")
+        data_cal = self.label_data_cal.cget("text")
+        gcm = self.label_gcm.cget("text")
+
+        if cert_num == "Não encontrado" or data_cal == "Não encontrado" or gcm == "Não encontrado":
+            messagebox.showwarning("Aviso", "Algumas informações essenciais do certificado (Número, Data, GCM) não foram encontradas. Verifique o PDF.")
+            return
+
+        status_global = "Aprovado"
+        data_analise = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
+        entry = {
+            "Número do Certificado": cert_num,
+            "Data de Calibração": data_cal,
+            "GCM do Material": gcm,
+            "Status Análise": status_global,
+            "Data da Análise": data_analise
+        }
+        self.aprovados_db.append(entry)
+        self.atualizar_aprovados_tree()
+        messagebox.showinfo("Sucesso", f"Registro do Certificado {cert_num} adicionado ao banco de aprovados com status '{status_global}'.")
+
+    def atualizar_aprovados_tree(self):
+        for item in self.tree_aprovados.get_children():
+            self.tree_aprovados.delete(item)
+
+        for entry in self.aprovados_db:
+            self.tree_aprovados.insert("", "end", values=(
+                entry.get("Número do Certificado", ""),
+                entry.get("Data de Calibração", ""),
+                entry.get("GCM do Material", ""),
+                entry.get("Status Análise", ""),
+                entry.get("Data da Análise", "")
+            ))
+
+    def visualizar_pdf(self):
+        if not self.current_pdf_path:
+            messagebox.showwarning("Aviso", "Nenhum arquivo PDF selecionado para visualizar.")
+            return
+        try:
+            if sys.platform.startswith('darwin'):
+                subprocess.call(('open', self.current_pdf_path))
+            elif os.name == 'nt':  # Windows
+                os.startfile(self.current_pdf_path)
+            elif os.name == 'posix':
+                subprocess.call(('xdg-open', self.current_pdf_path))
+            else:
+                messagebox.showerror("Erro", "Sistema operacional não suportado para abrir PDF.")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Não foi possível abrir o PDF:\n{e}")
+
+    def abrir_janela_reprovado(self):
+        if not self.current_data or not self.current_pdf_path:
+            messagebox.showwarning("Aviso", "Por favor, selecione e processe um PDF antes de usar esta função.")
+            return
+        janela_reprovado = tk.Toplevel(self.frame)
+        janela_reprovado.title("Motivo da Reprovação e Notificação por E-mail")
+        janela_reprovado.geometry("540x520")
+        janela_reprovado.transient(self.frame)
+        janela_reprovado.grab_set()
+
+        ttk.Label(janela_reprovado, text="Digite o motivo da reprovação:").pack(pady=(10, 5), anchor="w", padx=10)
+        texto_motivo = scrolledtext.ScrolledText(janela_reprovado, width=65, height=10)
+        texto_motivo.pack(padx=10, pady=(0, 10))
+
+        ttk.Label(janela_reprovado, text="Email do destinatário (para notificação):").pack(pady=(5, 5), anchor="w", padx=10)
+        entrada_email = ttk.Entry(janela_reprovado, width=65)
+        entrada_email.pack(padx=10, pady=(0, 10))
+
+        ttk.Label(janela_reprovado, text="Email remetente (para envio):").pack(pady=(5, 5), anchor="w", padx=10)
+        entrada_email_remetente = ttk.Entry(janela_reprovado, width=65)
+        entrada_email_remetente.pack(padx=10, pady=(0, 10))
+
+        ttk.Label(janela_reprovado, text="Senha do email remetente (ex: app password):").pack(pady=(5, 5), anchor="w", padx=10)
+        entrada_senha_remetente = ttk.Entry(janela_reprovado, show="*", width=65)
+        entrada_senha_remetente.pack(padx=10, pady=(0, 10))
+
+        ttk.Label(janela_reprovado, text="Servidor SMTP (ex: smtp.office365.com):").pack(pady=(5, 5), anchor="w", padx=10)
+        entrada_smtp = ttk.Entry(janela_reprovado, width=65)
+        entrada_smtp.pack(padx=10, pady=(0, 10))
+        entrada_smtp.insert(0, "smtp.office365.com")
+
+        ttk.Label(janela_reprovado, text="Porta SMTP (ex: 587):").pack(pady=(5, 5), anchor="w", padx=10)
+        entrada_porta = ttk.Entry(janela_reprovado, width=65)
+        entrada_porta.pack(padx=10, pady=(0, 10))
+        entrada_porta.insert(0, "587")
+
+        ttk.Label(janela_reprovado, text="Assunto do email:").pack(pady=(5, 5), anchor="w", padx=10)
+        entrada_assunto = ttk.Entry(janela_reprovado, width=65)
+        entrada_assunto.pack(padx=10, pady=(0, 10))
+        entrada_assunto.insert(0, f"Reprovação do Certificado {self.label_cert_num.cget('text')}")
+
+        def enviar_email_reprovado():
+            motivo = texto_motivo.get("1.0", "end").strip()
+            destinatario = entrada_email.get().strip()
+            remetente = entrada_email_remetente.get().strip()
+            senha = entrada_senha_remetente.get().strip()
+            smtp_server = entrada_smtp.get().strip()
+            porta = entrada_porta.get().strip()
+            assunto = entrada_assunto.get().strip()
+
+            if not motivo:
+                messagebox.showwarning("Aviso", "O motivo da reprovação é obrigatório.")
+                return
+            if not destinatario:
+                messagebox.showwarning("Aviso", "O email do destinatário é obrigatório.")
+                return
+            if not remetente:
+                messagebox.showwarning("Aviso", "O email remetente é obrigatório.")
+                return
+            if not senha:
+                messagebox.showwarning("Aviso", "A senha do email remetente é obrigatória.")
+                return
+            if not smtp_server:
+                messagebox.showwarning("Aviso", "O servidor SMTP é obrigatório.")
+                return
+            if not porta or not porta.isdigit():
+                messagebox.showwarning("Aviso", "A porta SMTP deve ser um número.")
+                return
+            if not assunto:
+                messagebox.showwarning("Aviso", "O assunto do email é obrigatório.")
+                return
+
+            try:
+                from email.mime.text import MIMEText
+                from email.mime.multipart import MIMEMultipart
+
+                message = MIMEMultipart()
+                message["From"] = remetente
+                message["To"] = destinatario
+                message["Subject"] = assunto
+
+                corpo_email = f"Motivo da Reprovação do Certificado {self.label_cert_num.cget('text')}:\n\n{motivo}"
+                message.attach(MIMEText(corpo_email, "plain"))
+
+                server = smtplib.SMTP(smtp_server, int(porta))
+                server.starttls()
+                server.login(remetente, senha)
+                server.sendmail(remetente, destinatario, message.as_string())
+                server.quit()
+
+                messagebox.showinfo("Sucesso", "Email enviado com sucesso!")
+                janela_reprovado.destroy()
+            except Exception as e:
+                messagebox.showerror("Erro no envio", f"Não foi possível enviar o email.\nErro: {str(e)}")
+
+        frame_botoes = ttk.Frame(janela_reprovado)
+        frame_botoes.pack(pady=10)
+
+        btn_enviar = ttk.Button(frame_botoes, text="Enviar Email", command=enviar_email_reprovado)
+        btn_enviar.pack(side="left", padx=10)
+
+        btn_cancelar = ttk.Button(frame_botoes, text="Cancelar", command=janela_reprovado.destroy)
+        btn_cancelar.pack(side="left", padx=10)
+
+    def exportar_historico_excel(self):
+        if not self.aprovados_db:
+            messagebox.showinfo("Nenhum Histórico", "Não há registros no histórico para exportar.")
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Arquivos Excel", "*.xlsx"), ("Todos os Arquivos", "*.*")],
+            title="Salvar Histórico como Excel"
+        )
+        if not filepath:
+            return
+
+        try:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Histórico Certificados"
+
+            headers = ["Número do Certificado", "Data de Calibração", "GCM do Material",
+                       "Status Análise", "Data da Análise"]
+            ws.append(headers)
+
+            for entry in self.aprovados_db:
+                ws.append([
+                    entry.get("Número do Certificado", ""),
+                    entry.get("Data de Calibração", ""),
+                    entry.get("GCM do Material", ""),
+                    entry.get("Status Análise", ""),
+                    entry.get("Data da Análise", "")
+                ])
+
+            for col_num, col_title in enumerate(headers, 1):
+                col_letter = get_column_letter(col_num)
+                ws.column_dimensions[col_letter].width = max(len(col_title) + 2, 15)
+
+            wb.save(filepath)
+            messagebox.showinfo("Exportação Concluída", f"Histórico exportado com sucesso para:\n{filepath}")
+            self.status_label.config(text="Status: Histórico exportado para Excel.", fg="blue")
+
+        except Exception as e:
+            messagebox.showerror("Erro de Exportação", f"Ocorreu um erro ao exportar o histórico:\n{e}")
+            self.status_label.config(text="Status: Erro na exportação do histórico.", fg="red")
+
+
+def extrair_info_adicional(texto):
+    cert_num = ""
+    data_cal = ""
+    gcm = ""
+
+    padrao_certificados = [
+        r"\bC\d{6}/\d{2}\b",
+        r"N[úu]mero de Identifica[cç][aã]o[\s\n\r]*[:\-]?\s*([A-Z0-9\/\.\-]+)",
+        r"Identifica[cç][aã]o do Certificado[\s\n\r]*[:\-]?\s*([A-Z0-9\/\.\-]+)",
+        r"Identifica[cç][aã]o[\s\n\r]*[:\-]?\s*([A-Z0-9\/\.\-]+)"
+    ]
+
+    for padrao in padrao_certificados:
+        cert_match = re.search(padrao, texto, re.IGNORECASE)
+        if cert_match:
+            cert_num = cert_match.group(0).strip() if padrao == r"\bC\d{6}/\d{2}\b" else cert_match.group(1).strip()
+            break
+
+    # Padrão para pegar a PRIMEIRA data no formato DD/MM/AA (dia/mês/ano com 2 dígitos)
+    padrao_data = r"\b\d{1,2}/\d{1,2}/\d{4}\b"
+    data_match = re.search(padrao_data, texto)
+    if data_match:
+        data_cal = data_match.group(0).strip()  # Pega a primeira ocorrência
+
+    gcm_match = re.search(r"(?:Identifica[cç][aã]o:[\s\n\r]*|GCM do Material:[\s\n\r]*)?(GCM[^\n\r]*)", texto, re.IGNORECASE)
+    if gcm_match:
+        gcm_full_string = gcm_match.group(1).strip()
+        if gcm_full_string.lower().startswith("identificação:"):
+            gcm = gcm_full_string[len("identificação:"):].strip()
+        elif gcm_full_string.lower().startswith("gcm do material:"):
+            gcm = gcm_full_string[len("gcm do material:"):].strip()
+        else:
+            gcm = gcm_full_string
+
+    return cert_num, data_cal, gcm
+
+def extrair_dados_pdf(caminho_pdf):
+    """Extrai dados de um certificado PDF de calibração"""
+    try:
+        doc = fitz.open(caminho_pdf)
+        texto = ""
+        for pagina in doc:
+            texto += pagina.get_text()
+        doc.close()
+    except Exception as e:
+        messagebox.showerror("Erro de Leitura", f"Não foi possível ler o arquivo PDF: {e}")
+        return [], {"tipo": "desconhecido", "valor":0, "unidade": ""}, "", "", ""
+
+    # Extrai informações adicionais (número do certificado, data, GCM)
+    cert_num, data_cal, gcm = extrair_info_adicional(texto)
+    
+    # Padrão principal para extrair os dados da tabela
+    padrao_principal = re.compile(
+        r"^\s*(\d+[\.,]?\d*)\s+"      # 1. V.I (Ponto)
+        r"(\d+[\.,]?\d*)\s+"          # 2. V.R (Certificado)
+        r"([-–]?\d+[\.,]?\d*)\s+"     # 3. Erro (PDF)
+        r"(\d+[\.,]?\d*)\s+"          # 4. Incerteza
+        r"(?:\d+[\.,]?\d*\s+)?"       # 5. k (opcional)
+        r"(\d+[\.,]?\d*)\s+"          # 6. Erro Total (PDF)
+        r"(\d+[\.,]?\d*)\s*$",        # 7. Erro Total (Calculado)
+        re.MULTILINE
+    )
+    
+    dados = []
+    for match in padrao_principal.finditer(texto):
+        try:
+            # Extrai e converte os valores
+            vi = float(match.group(1).replace(",", "."))
+            vr = float(match.group(2).replace(",", "."))
+            erro_pdf = float(match.group(3).replace(",", ".").replace("–", "-"))
+            incert = float(match.group(4).replace(",", "."))
+            erro_total_pdf = float(match.group(5).replace(",", "."))
+            limite_erro = float(match.group(6).replace(",", "."))  # Agora a coluna 8 é o Limite de Erro
+            
+            # Realiza os cálculos necessários
+            erro_calc = vi - vr
+            erro_total_calc = abs(erro_calc) + incert
+            erro_confere = abs(erro_calc - erro_pdf) < 0.05  # Margem de 0.05 para diferenças
+            erro_total_confere = abs(erro_total_calc - erro_total_pdf ) < 0.1
+            limite_confere = abs(erro_total_calc - limite_erro) < 0.05
+            
+            # Determina o status
+            status = "Aprovado" if erro_confere and erro_total_confere else "Reprovado"
+            
+            # Adiciona os dados formatados
+            dados.append({
+                "V.I (Ponto)": round(vi, 5),
+                "V.R (Certificado)": round(vr, 5),
+                "Erro (Calc)": round(erro_calc, 5),
+                "Erro (PDF)": round(erro_pdf, 5),
+                "Erro Confere?": "Sim" if erro_confere else "Não",
+                "Incerteza": round(incert, 5),
+                "Erro Total (PDF)": round(erro_total_pdf, 5),
+                "Erro Total (Calculado)": round(erro_total_calc, 5),
+                "Erro Total Confere?": "Sim" if erro_total_confere else "Não",
+                "Limite de Erro": round(limite_erro, 5),  # Usa o valor da coluna 8 diretamente
+                "Status": status
+            })
+        except Exception as e:
+            print(f"Erro ao processar linha: {e}")
+            continue
+
+    # Se não encontrou dados com o padrão principal, tenta um padrão alternativo
+    if not dados:
+        padrao_alternativo = re.compile(
+            r"(\d+[\.,]?\d*)[\s\-]+"      # V.I
+            r"(\d+[\.,]?\d*)[\s\-]+"      # V.R
+            r"([-–]?\d+[\.,]?\d*)[\s\-]+" # Erro
+            r"(\d+[\.,]?\d*)[\s\-]+"      # Incerteza
+            r"(\d+[\.,]?\d*)[\s\-]+"      # Erro Total (PDF)
+            r"(\d+[\.,]?\d*)\b"           # Limite (coluna 8)
+        )
+        
+        for match in padrao_alternativo.finditer(texto):
+            try:
+                vi = float(match.group(1).replace(",", "."))
+                vr = float(match.group(2).replace(",", "."))
+                erro_pdf = float(match.group(3).replace(",", ".").replace("–", "-"))
+                incert = float(match.group(4).replace(",", "."))
+                erro_total_pdf = float(match.group(5).replace(",", "."))
+                limite_erro = float(match.group(6).replace(",", "."))  # Agora a coluna 8 é o Limite de Erro
+                
+                 # Realiza os cálculos necessários
+                erro_calc = vi - vr
+                erro_total_calc = abs(erro_calc) + incert
+                
+                # Verificações
+                erro_confere = abs(erro_calc - erro_pdf) < 0.1  # Margem reduzida para maior precisão
+                erro_total_confere = abs(erro_total_calc - erro_total_pdf ) < 0.1 # Comparação direta
+                limite_confere = erro_total_calc <= limite_erro  # Verificação de aprovação
+                
+                status = "Aprovado" if erro_confere and erro_total_confere else "Reprovado"
+                
+                dados.append({
+                    "V.I (Ponto)": round(vi, 5),
+                    "V.R (Certificado)": round(vr, 5),
+                    "Erro (Calc)": round(erro_calc, 5),
+                    "Erro (PDF)": round(erro_pdf, 5),
+                    "Erro Confere?": "Sim" if erro_confere else "Não",
+                    "Incerteza": round(incert, 5),
+                    "Erro Total (PDF)": round(erro_total_pdf, 5),
+                    "Erro Total (Calculado)": round(erro_total_calc, 5),
+                    "Erro Total Confere?": "Sim" if erro_total_confere else "Não",
+                    "Limite de Erro": round(limite_erro, 5),  # Usa o valor da coluna 8 diretamente
+                    "Status": status
+                })
+            except Exception as e:
+                print(f"Erro ao processar linha (padrão alternativo): {e}")
+                continue
+
+    # Se ainda não encontrou dados, mostra mensagem de debug
+    if not dados:
+        print("Não foi possível extrair dados da tabela. Texto extraído do PDF:")
+        print(texto[:2000])  # Mostra os primeiros 2000 caracteres para análise
+        messagebox.showwarning("Aviso", "Não foi possível extrair dados da tabela. Verifique o formato do PDF.")
+
+    # Prepara as informações de limite para retorno
+    limite_info = {
+        "tipo": "fixo", 
+        "valor": dados[0]["Limite de Erro"] if dados else 0,
+        "unidade": ""
+    }
+
+    return dados, limite_info, cert_num, data_cal, gcm
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = App(root)
+    root.geometry("1160x840")
+    root.mainloop()
